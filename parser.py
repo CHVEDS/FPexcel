@@ -1,13 +1,12 @@
 """
-Excel Parser with Formula Evaluation and Image Extraction
+Парсер Excel с функцией вычисления формул и извлечения изображений
 =========================================================
 
-This module uses:
-- xlwings: to evaluate formulas (including Russian functions and external links)
-- openpyxl + openpyxl-image-loader: to extract images associated with cells
+В этом модуле используются:
+- xlwings: для вычисления формул (включая русские функции и внешние ссылки)
+- openpyxl + openpyxl-image-loader: для извлечения изображений, связанных с ячейками
 
-Author: Чураев Вадим Эдуардович
-Date: 29 May 2026
+Автор: Чураев Вадим Эдуардович
 """
 
 import os
