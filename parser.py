@@ -1,40 +1,31 @@
 """
 Парсер Excel с вычислением формул, извлечением изображений и метаданных ячеек
-=============================================================================
-
 Использует:
-- xlwings: вычисление формул через Excel (поддержка русских функций, внешних ссылок)
-- openpyxl: извлечение изображений, формул, форматирования, объединённых ячеек
-
-Автор: Чураев Вадим Эдуардович || РЭУ ИМ.ПЛЕХАНОВА
+xlwings: вычисление формул через Excel (поддержка русских функций, внешних ссылок)
+openpyxl: извлечение изображений, формул, форматирования, объединённых ячеек
+Автор: Чураев Вадим Эдуардович
 """
-
 import os
 import re
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-
 import xlwings as xw
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter, column_index_from_string
 from openpyxl_image_loader import SheetImageLoader
 
-
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
+logger = logging.getLogger(name)
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Вспомогательные функции
 # ---------------------------------------------------------------------------
-
 def _col_letter(n: int) -> str:
     return get_column_letter(n)
 
-
 def _resolve_merged(ws_op) -> Dict[str, str]:
-    """Return mapping coord -> top-left coord for every cell inside a merged range."""
+    """Возвращает сопоставление координат -> координаты левого верхнего угла для каждой ячейки в объединённом диапазоне."""
     mapping: Dict[str, str] = {}
     for merged_range in ws_op.merged_cells.ranges:
         top_left = f"{_col_letter(merged_range.min_col)}{merged_range.min_row}"
@@ -45,12 +36,11 @@ def _resolve_merged(ws_op) -> Dict[str, str]:
                     mapping[coord] = top_left
     return mapping
 
-
 def _detect_real_bounds(ws_op, max_scan_col: int = 500) -> Tuple[int, int]:
     """
-    Detect actual last row/col with data, capped at max_scan_col columns.
-    Avoids the bloated used_range that openpyxl reports when there are
-    stray styles far to the right (e.g. A1:XCA20323 when data ends at BN).
+    Определяет фактическую последнюю строку/столбец с данными, ограничиваясь max_scan_col столбцами.
+    Избегает раздутого used_range, который openpyxl отчитывает при наличии случайных стилей
+    далеко справа (например, A1:XCA20323, когда данные заканчиваются на BN).
     """
     last_row = 0
     last_col = 0
@@ -63,9 +53,8 @@ def _detect_real_bounds(ws_op, max_scan_col: int = 500) -> Tuple[int, int]:
                     last_col = cell.column
     return last_row, last_col
 
-
 def _cell_color(cell) -> Optional[str]:
-    """Return hex fill color of a cell, or None if no fill / transparent."""
+    """Возвращает hex-код цвета заливки ячейки или None, если заливка отсутствует/прозрачна."""
     try:
         fg = cell.fill.fgColor
         if fg.type == "rgb" and fg.rgb not in ("00000000", "FFFFFFFF", "00FFFFFF"):
@@ -75,7 +64,6 @@ def _cell_color(cell) -> Optional[str]:
     except Exception:
         pass
     return None
-
 
 def _cell_formatting(cell) -> Dict[str, Any]:
     fmt: Dict[str, Any] = {}
@@ -94,11 +82,9 @@ def _cell_formatting(cell) -> Dict[str, Any]:
         pass
     return fmt
 
-
 # ---------------------------------------------------------------------------
-# Main parser
+# Основной парсер
 # ---------------------------------------------------------------------------
-
 def parse_excel(
     filepath: str,
     image_dir: str = "images",
@@ -111,73 +97,73 @@ def parse_excel(
     max_row: Optional[int] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """
-    Parse an Excel file and extract computed values, formulas, images,
-    merged-cell info, and optionally cell formatting.
+    Парсит Excel-файл и извлекает вычисленные значения, формулы, изображения,
+    информацию об объединённых ячейках и, при необходимости, форматирование.
 
-    Parameters
+    Параметры
     ----------
     filepath : str
-        Path to the .xlsx file.
+        Путь к файлу .xlsx.
     image_dir : str
-        Directory to save extracted images.
+        Директория для сохранения извлечённых изображений.
     sheet_name : str, optional
-        Sheet name or None for the active sheet.
+        Имя листа или None для активного листа.
     close_app : bool
-        Quit Excel after reading (default True).
+        Закрыть Excel после чтения (по умолчанию True).
     skip_empty : bool
-        Omit cells where value, formula, and image are all None/empty.
+        Пропускать ячейки, где значение, формула и изображение равны None/пусты.
     include_formula : bool
-        Include raw formula text in the output (default True).
+        Включить исходный текст формулы в результат (по умолчанию True).
     include_formatting : bool
-        Include cell formatting metadata (bold, fill color, etc.).
+        Включить метаданные форматирования ячейки (жирный, цвет заливки и т.д.).
     max_col : int, optional
-        Stop scanning after this column number. Useful for files with
-        thousands of bloat columns (e.g. stray styles reaching XCA).
-        If None, auto-detects by scanning up to column 500.
+        Остановить сканирование после этого номера столбца. Полезно для файлов с
+        тысячами лишних столбцов (например, случайные стили до XCA).
+        Если None, автоматически определяет границы, сканируя до 500 столбца.
     max_row : int, optional
-        Stop scanning after this row. If None, uses all rows.
+        Остановить сканирование после этой строки. Если None, использует все строки.
 
-    Returns
+    Возвращает
     -------
     dict
-        Keyed by Excel coordinate (e.g. "A1"):
-        - "value"      : computed cell value (str/int/float/datetime/None)
-        - "formula"    : raw formula string or None  (if include_formula)
-        - "image_path" : path to saved image or None
-        - "merged_into": coordinate of top-left merge cell, if applicable
-        - "formatting" : dict with bold/fill_color/etc.  (if include_formatting)
+        Ключи — координаты Excel (например, "A1"):
+        - "value"      : вычисленное значение ячейки (str/int/float/datetime/None)
+        - "formula"    : строка формулы или None (если include_formula)
+        - "image_path" : путь к сохранённому изображению или None
+        - "merged_into": координата левой верхней ячейки объединения, если применимо
+        - "formatting" : словарь с bold/fill_color/etc. (если include_formatting)
 
-    Raises
+    Исключения
     ------
     FileNotFoundError
-        If the Excel file does not exist.
+        Если Excel-файл не найден.
     RuntimeError
-        If Excel fails to open the file.
+        Если не удалось открыть файл в Excel.
     """
     filepath = os.path.abspath(filepath)
     if not os.path.isfile(filepath):
-        raise FileNotFoundError(f"Excel file not found: {filepath}")
+        raise FileNotFoundError(f"Excel-файл не найден: {filepath}")
 
     Path(image_dir).mkdir(parents=True, exist_ok=True)
-    logger.info(f"Parsing: {filepath}")
+    logger.info(f"Парсинг: {filepath}")
 
-    # ── Step 1: computed values via xlwings ──────────────────────────────────
+    # ── Шаг 1: вычисление значений через xlwings ──────────────────────────────────
     computed_values: Dict[str, Any] = {}
     app = None
     wb_xw = None
     try:
-        logger.debug("Opening Excel via xlwings...")
+        logger.debug("Открытие Excel через xlwings...")
         app = xw.App(visible=False, add_book=False)
         wb_xw = app.books.open(filepath)
         ws_xw = wb_xw.sheets[sheet_name] if sheet_name else wb_xw.sheets.active
 
         used = ws_xw.used_range
         if used is None:
-            logger.warning("xlwings: no used range detected.")
+            logger.warning("xlwings: используемый диапазон не обнаружен.")
         else:
             raw = used.value
             if raw is None:
-                logger.warning("xlwings: used range is empty.")
+                logger.warning("xlwings: используемый диапазон пуст.")
             else:
                 if not isinstance(raw, list):
                     raw = [[raw]]
@@ -190,7 +176,7 @@ def parse_excel(
                     for j, val in enumerate(row):
                         r = origin_row + i
                         c = origin_col + j
-                        # Respect max_col / max_row limits
+                        # Учитываем ограничения max_col / max_row
                         if max_col and c > max_col:
                             break
                         if max_row and r > max_row:
@@ -199,8 +185,8 @@ def parse_excel(
                         computed_values[coord] = val
 
     except Exception as e:
-        logger.exception("xlwings failed — computed values unavailable")
-        raise RuntimeError(f"xlwings error: {e}") from e
+        logger.exception("Ошибка xlwings — вычисленные значения недоступны")
+        raise RuntimeError(f"Ошибка xlwings: {e}") from e
     finally:
         if wb_xw:
             try:
@@ -213,29 +199,29 @@ def parse_excel(
             except Exception:
                 pass
 
-    # ── Step 2: formulas, images, formatting via openpyxl ───────────────────
-    logger.debug("Loading workbook via openpyxl...")
+    # ── Шаг 2: формулы, изображения, форматирование через openpyxl ───────────────────
+    logger.debug("Загрузка книги через openpyxl...")
     wb_op = load_workbook(filepath, data_only=False)
     ws_op = wb_op[sheet_name] if sheet_name else wb_op.active
 
-    # Auto-detect real column/row bounds to skip bloat
+    # Автоопределение реальных границ столбцов/строк для пропуска "раздутых" областей
     if max_col is None:
-        logger.debug("Auto-detecting real column bounds (max 500 cols)...")
+        logger.debug("Автоопределение реальных границ столбцов (макс. 500)...")
         _, detected_col = _detect_real_bounds(ws_op, max_scan_col=500)
         effective_max_col = max(detected_col, 1) if detected_col else 500
     else:
         effective_max_col = max_col
 
-    effective_max_row = max_row  # None = no limit
+    effective_max_row = max_row  # None = без ограничений
 
-    # Merged cells mapping
+    # Сопоставление объединённых ячеек
     merged_map = _resolve_merged(ws_op)
 
-    # Image loader
+    # Загрузчик изображений
     try:
         image_loader = SheetImageLoader(ws_op)
     except (ValueError, Exception) as e:
-        logger.warning(f"Image loader unavailable: {e}")
+        logger.warning(f"Загрузчик изображений недоступен: {e}")
         image_loader = None
 
     result: Dict[str, Dict[str, Any]] = {}
@@ -244,12 +230,12 @@ def parse_excel(
         for cell in row:
             coord = cell.coordinate
 
-            # Formula
+            # Формула
             formula: Optional[str] = None
             if include_formula and isinstance(cell.value, str) and cell.value.startswith("="):
                 formula = cell.value
 
-            # Image
+            # Изображение
             img_path: Optional[str] = None
             if image_loader:
                 try:
@@ -257,13 +243,13 @@ def parse_excel(
                         img = image_loader.get(coord)
                         img_path = os.path.join(image_dir, f"{coord}.png")
                         img.save(img_path)
-                        logger.debug(f"Image saved: {coord} -> {img_path}")
+                        logger.debug(f"Изображение сохранено: {coord} -> {img_path}")
                 except Exception as img_err:
-                    logger.error(f"Image error at {coord}: {img_err}")
+                    logger.error(f"Ошибка изображения в {coord}: {img_err}")
 
             value = computed_values.get(coord)
 
-            # Skip truly empty cells
+            # Пропуск полностью пустых ячеек
             if skip_empty and value is None and formula is None and img_path is None:
                 continue
 
@@ -285,24 +271,21 @@ def parse_excel(
             result[coord] = entry
 
     wb_op.close()
-    logger.info(f"Done. Parsed {len(result)} cells.")
+    logger.info(f"Готово. Обработано {len(result)} ячеек.")
     return result
 
-
 # ---------------------------------------------------------------------------
-# Header extraction helper
+# Вспомогательная функция для извлечения заголовков
 # ---------------------------------------------------------------------------
-
 def extract_headers(
     result: Dict[str, Dict[str, Any]],
     header_rows: List[int],
 ) -> Dict[str, str]:
     """
-    Build a column -> header label mapping from one or more header rows.
-    Concatenates non-empty values from each header row for each column.
-
-    Example: header_rows=[2, 3] mimics the two-row group/sub-header pattern
-    in Практика Python.xlsx.
+    Создаёт сопоставление столбец -> заголовок на основе одной или нескольких строк заголовков.
+    Конкатенирует непустые значения из каждой строки заголовка для каждого столбца.
+    Пример: header_rows=[2, 3] имитирует паттерн из двух строк (группа/подзаголовок)
+    как в Практика Python.xlsx.
     """
     headers: Dict[str, List[str]] = {}
     for coord, info in result.items():
@@ -321,16 +304,13 @@ def extract_headers(
 
     return {col: " / ".join(parts) for col, parts in headers.items()}
 
-
 # ---------------------------------------------------------------------------
-# CLI entry point
+# Точка входа CLI
 # ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
+if name == "main":
     import sys
-
     if len(sys.argv) < 2:
-        print("Usage: python \"parser (1).py\" <file.xlsx> [image_dir] [sheet_name]")
+        print("Использование: python \"parser (1).py\" <файл.xlsx> [директория_изображений] [имя_листа]")
         sys.exit(1)
 
     excel_path = sys.argv[1]
@@ -346,19 +326,19 @@ if __name__ == "__main__":
             include_formatting=True,
         )
 
-        # Print summary
+        # Вывод сводки
         has_image = sum(1 for v in data.values() if v.get("image_path"))
         has_formula = sum(1 for v in data.values() if v.get("formula"))
-        print(f"Total cells: {len(data)}")
-        print(f"  with values : {sum(1 for v in data.values() if v['value'] is not None)}")
-        print(f"  with formulas: {has_formula}")
-        print(f"  with images  : {has_image}")
+        print(f"Всего ячеек: {len(data)}")
+        print(f"  со значениями : {sum(1 for v in data.values() if v['value'] is not None)}")
+        print(f"  с формулами: {has_formula}")
+        print(f"  с изображениями  : {has_image}")
 
-        # Print first 30 non-empty cells
-        print("\nFirst 30 cells:")
+        # Вывод первых 30 непустых ячеек
+        print("\nПервые 30 ячеек:")
         for coord, info in list(sorted(data.items()))[:30]:
-            print(f"  {coord}: value={repr(info['value'])[:50]}  formula={info.get('formula','')[:40]}")
+            print(f"  {coord}: значение={repr(info['value'])[:50]}  формула={info.get('formula','')[:40]}")
 
     except Exception:
-        logger.exception("Parsing failed")
+        logger.exception("Ошибка парсинга")
         sys.exit(1)
